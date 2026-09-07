@@ -175,20 +175,47 @@ st.markdown(
         font-size: 0.95rem !important;
         font-weight: 600 !important;
     }
+    /* Hide the native circle indicator so the label reads as a plain nav
+       item — cast a wide net since the exact wrapper markup for a radio
+       "bullet" differs across Streamlit versions/hosts. */
+    section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child,
+    section[data-testid="stSidebar"] div[role="radiogroup"] label [data-baseweb="radio"] > div:first-child,
+    section[data-testid="stSidebar"] div[role="radiogroup"] label svg {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        display: flex !important;
+        align-items: center !important;
+    }
 
-    /* Buttons */
+    /* Buttons — colors forced explicitly (don't rely on the deploy
+       environment picking up .streamlit/config.toml, which some hosts
+       resolve relative to the repo root rather than the app's folder). */
     .stButton > button, .stFormSubmitButton > button {
-        border-radius: 8px;
-        font-weight: 600;
-        border: 1px solid var(--fivegen-accent);
+        background-color: #FFFFFF !important;
+        color: var(--fivegen-text) !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        border: 1px solid var(--fivegen-accent) !important;
+    }
+    .stButton > button:hover, .stFormSubmitButton > button:hover {
+        background-color: #F1EFFF !important;
+        color: var(--fivegen-accent-dark) !important;
     }
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {
-        background-color: var(--fivegen-accent);
-        border-color: var(--fivegen-accent);
+        background-color: var(--fivegen-accent) !important;
+        color: #FFFFFF !important;
+        border-color: var(--fivegen-accent) !important;
     }
     .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primary"]:hover {
-        background-color: var(--fivegen-accent-dark);
-        border-color: var(--fivegen-accent-dark);
+        background-color: var(--fivegen-accent-dark) !important;
+        color: #FFFFFF !important;
+        border-color: var(--fivegen-accent-dark) !important;
+    }
+    .stButton > button:disabled, .stFormSubmitButton > button:disabled {
+        background-color: #F1F1F5 !important;
+        color: #9CA3AF !important;
+        border-color: #E3E1F5 !important;
     }
 
     /* Metric cards */
