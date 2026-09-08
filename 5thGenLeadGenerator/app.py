@@ -41,6 +41,7 @@ import website_research
 import ai_analysis
 import ai_outreach
 import docly_scheduler
+import bulkreach_scheduler
 import tracking_server
 from ai_provider import get_provider
 from logger_setup import get_logger
@@ -330,6 +331,7 @@ def render_sidebar() -> str:
         "🤖 AI Lead Analysis",
         "📧 AI Outreach",
         "📨 Docly",
+        "🚀 BulkReach",
         "📈 Reporting",
     ]
     selected = st.sidebar.radio(
@@ -1353,6 +1355,231 @@ def render_docly_section():
 
 
 # ---------------------------------------------------------------------------
+# BulkReach — large-CSV, HTML template, daily-paced auto sending. Fully
+# separate dashboard and data from Docly (own tables, own scheduler).
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def _start_bulkreach_scheduler():
+    bulkreach_scheduler.ensure_started()
+    tracking_server.ensure_started()
+    return True
+
+
+def render_bulkreach_section():
+    st.header("🚀 BulkReach")
+    st.caption(
+        "For big lists (500-1000+ leads): paste an HTML cold-email template once, "
+        "upload the CSV, pick how many to send per day, and turn sending on. "
+        "Today's batch goes out now; the rest stays queued and releases "
+        "automatically on the following days — each contact then gets the "
+        "same automatic Day 2 / Day 7 follow-up as Docly. Fully separate "
+        "contact list and dashboard from Docly (same business mailbox)."
+    )
+
+    _start_bulkreach_scheduler()
+
+    # --- SMTP + tracking status (same business mailbox as Docly) --------
+    smtp_ok = config.docly_smtp_configured()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if smtp_ok:
+            st.success(f"Business mail configured: **{config.SMTP_FROM_EMAIL}**")
+        else:
+            st.warning(
+                "Business mail not configured yet. Fill SMTP_HOST / SMTP_USER / "
+                "SMTP_PASSWORD / SMTP_FROM_EMAIL in Secrets/`.env` (same as Docly)."
+            )
+    with col_b:
+        sent_today = database.bulkreach_sent_today_count()
+        daily_limit = database.bulkreach_get_daily_limit()
+        st.metric("Sent today", f"{sent_today} / {daily_limit}")
+
+    if config.docly_tracking_ready():
+        st.success(f"👁️ Open tracking is live at `{config.TRACKING_BASE_URL}`.")
+    else:
+        st.warning(
+            "👁️ Open tracking is **off**. Set `TRACKING_ENABLED=true` and "
+            "`TRACKING_BASE_URL` (same setting Docly uses) to a publicly "
+            "reachable address for opens to register."
+        )
+
+    # --- Daily limit control ---------------------------------------------
+    st.subheader("📅 Daily Sending Pace")
+    new_limit = st.number_input(
+        "How many NEW leads to start (Day 0) per day",
+        min_value=1, max_value=2000, value=daily_limit, step=10,
+        key="bulkreach_daily_limit_input",
+        help="Existing contacts' Day 2 / Day 7 follow-ups always go out on "
+             "schedule and share this same daily cap.",
+    )
+    if st.button("💾 Save Daily Limit", key="bulkreach_save_limit"):
+        database.bulkreach_set_daily_limit(int(new_limit))
+        st.success(f"Daily limit set to {int(new_limit)}.")
+        st.rerun()
+
+    # --- Sending toggle ----------------------------------------------------
+    currently_on = database.bulkreach_sending_enabled()
+    toggle = st.toggle(
+        "✅ Enable Sending (turn ON when you're ready to actually send)",
+        value=currently_on, disabled=not smtp_ok, key="bulkreach_sending_toggle",
+    )
+    if toggle != currently_on:
+        database.bulkreach_set_sending_enabled(toggle)
+        st.rerun()
+
+    if not config.SMTP_ENABLED:
+        st.info("Note: `SMTP_ENABLED=false` — set it to `true` as well before sending will actually go out.")
+
+    st.divider()
+
+    # --- HTML templates ---------------------------------------------------
+    st.subheader("✉️ HTML Cold-Mail Templates")
+    st.caption(
+        "Use `{business_name}` anywhere — replaced automatically per contact. "
+        "Paste a full HTML email template in the body box below. Only Day 0 "
+        "is required — leave Day 2 / Day 7 blank to send just one message "
+        "with no follow-up."
+    )
+
+    for step, label in [(1, "Day 0 — First message"), (2, "Day 2 — Follow-up"), (3, "Day 7 — Final follow-up")]:
+        st.markdown(f"**{label}**")
+        subj_key = f"bulkreach_subject_{step}"
+        body_key = f"bulkreach_body_{step}"
+        st.text_input(
+            "Subject", value=database.bulkreach_get_subject(step, ""),
+            key=subj_key, placeholder="Leave blank to use a sensible default",
+        )
+        st.text_area(
+            "HTML body", value=database.bulkreach_get_template(step, ""),
+            height=180, key=body_key,
+        )
+
+    if st.button("💾 Save Templates", key="bulkreach_save_templates"):
+        for step in (1, 2, 3):
+            database.bulkreach_set_subject(step, st.session_state[f"bulkreach_subject_{step}"])
+            database.bulkreach_set_template(step, st.session_state[f"bulkreach_body_{step}"])
+        st.success("Templates saved.")
+
+    st.divider()
+
+    # --- CSV import (large lists) ------------------------------------------
+    st.subheader("📤 Import Leads (CSV — supports large lists)")
+    st.caption(
+        "CSV needs a `business_name` column and an `email` column. "
+        "New contacts join the queue — they do NOT send immediately."
+    )
+    uploaded = st.file_uploader("Upload CSV", type=["csv"], key="bulkreach_csv_uploader")
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+        except Exception as exc:
+            st.error(f"Could not read CSV: {exc}")
+            df = None
+
+        if df is not None:
+            cols_lower = {c.lower().strip(): c for c in df.columns}
+            name_col = cols_lower.get("business_name") or cols_lower.get("name")
+            email_col = cols_lower.get("email")
+
+            if not email_col:
+                st.error("CSV must have an `email` column.")
+            else:
+                st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+                st.caption(f"{len(df)} row(s) in this file.")
+                if st.button("📥 Add to Queue", key="bulkreach_import_btn"):
+                    rows = [
+                        {
+                            "business_name": str(row.get(name_col, "")).strip() if name_col else "",
+                            "email": str(row.get(email_col, "")).strip(),
+                        }
+                        for _, row in df.iterrows()
+                    ]
+                    result = database.bulkreach_import_contacts(rows, source_batch=uploaded.name)
+                    st.success(
+                        f"Queued {result['imported']} new contact(s). "
+                        f"Skipped {result['duplicates_skipped']} duplicate(s), "
+                        f"{result['invalid_skipped']} invalid row(s)."
+                    )
+
+    st.divider()
+
+    # --- Queue status + manual trigger -------------------------------------
+    st.subheader("🔄 Queue & Sending Status")
+    queued_count = database.bulkreach_get_queued_count()
+    col_q1, col_q2 = st.columns(2)
+    col_q1.metric("Still queued", queued_count)
+    col_q2.metric("Today's remaining quota", max(daily_limit - sent_today, 0))
+
+    if st.button("Check & Send Due Messages Now", key="bulkreach_check_now"):
+        result = bulkreach_scheduler.run_one_check()
+        st.info(
+            f"Checked {result['checked']} — sent {result['sent']}, "
+            f"failed {result['failed']}, newly released {result['released']}, "
+            f"skipped (sending off) {result['skipped_disabled']}, "
+            f"skipped (daily limit) {result['skipped_limit']}."
+        )
+
+    sequences = database.bulkreach_get_all_sequences()
+    if sequences:
+        open_status = database.bulkreach_get_open_status()
+        for s in sequences:
+            last_open = open_status.get(s["contact_id"])
+            s["opened"] = f"👁️ {last_open}" if last_open else "—"
+
+        df_seq = pd.DataFrame(sequences)
+        display_cols = [
+            "business_name", "email", "crm_stage", "status", "current_step",
+            "opened", "next_send_at", "last_sent_at",
+        ]
+        display_cols = [c for c in display_cols if c in df_seq.columns]
+        st.dataframe(
+            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage"}),
+            use_container_width=True, hide_index=True,
+        )
+
+        col_stop, col_stage = st.columns(2)
+        with col_stop:
+            stop_email = st.text_input(
+                "Stop sequence for this email (e.g. they replied)", key="bulkreach_stop_email"
+            )
+            if st.button("⛔ Stop Sequence", key="bulkreach_stop_btn") and stop_email:
+                contact = database.bulkreach_get_contact_by_email(stop_email)
+                if contact:
+                    database.bulkreach_stop_sequence(contact["id"], reason="Manually stopped")
+                    st.success(f"Sequence stopped for {stop_email}.")
+                    st.rerun()
+                else:
+                    st.warning("No matching contact found.")
+        with col_stage:
+            st.caption("Update CRM stage manually (Replied/Interested/Won/Lost, etc.).")
+            stage_email = st.text_input("Contact email", key="bulkreach_stage_email")
+            new_stage = st.selectbox(
+                "New stage", database.BULKREACH_CRM_STAGES, key="bulkreach_stage_pick"
+            )
+            if st.button("📌 Update Stage", key="bulkreach_stage_btn") and stage_email:
+                contact = database.bulkreach_get_contact_by_email(stage_email)
+                if contact:
+                    database.bulkreach_set_crm_stage(contact["id"], new_stage)
+                    st.success(f"{stage_email} marked as **{new_stage}**.")
+                    st.rerun()
+                else:
+                    st.warning("No matching contact found.")
+    else:
+        st.info("No contacts imported yet.")
+
+    st.divider()
+    st.subheader("📜 Recent Send Log")
+    log = database.bulkreach_get_recent_log(limit=30)
+    if log:
+        df_log = pd.DataFrame(log)
+        display_cols = ["sent_at", "business_name", "email", "step", "subject", "status", "error_message"]
+        display_cols = [c for c in display_cols if c in df_log.columns]
+        st.dataframe(df_log[display_cols], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Nothing sent yet.")
+
+
+# ---------------------------------------------------------------------------
 # Reporting — ROI dashboard (Phase 1-4 pipeline funnel + Docly funnel/opens)
 # ---------------------------------------------------------------------------
 def render_reporting_section():
@@ -1447,6 +1674,43 @@ def render_reporting_section():
             )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    st.divider()
+
+    st.subheader("🚀 BulkReach Sending & ROI (separate from Docly)")
+    br_overview = database.reporting_bulkreach_overview()
+
+    br1, br2, br3, br4 = st.columns(4)
+    br1.metric("Total contacts", br_overview["total_contacts"])
+    br2.metric("Still queued", br_overview["queued"])
+    br3.metric("Emails sent", br_overview["total_sent"])
+    br_open_rate = (
+        br_overview["unique_opened_contacts"] / br_overview["total_contacts"] * 100
+        if br_overview["total_contacts"] else 0
+    )
+    br4.metric("Unique open rate", f"{br_open_rate:.0f}%")
+
+    st.markdown("**BulkReach lead pipeline (CRM stages)**")
+    br_stage_counts = br_overview["stage_counts"]
+    br_stage_df = pd.DataFrame(
+        {"Stage": list(br_stage_counts.keys()), "Contacts": list(br_stage_counts.values())}
+    ).set_index("Stage")
+    st.bar_chart(br_stage_df)
+
+    br_step_stats = br_overview["step_stats"]
+    if br_step_stats:
+        st.markdown("**BulkReach per-step performance (Day 0 / Day 2 / Day 7)**")
+        step_names = {1: "Day 0", 2: "Day 2", 3: "Day 7"}
+        br_rows = []
+        for step, stats in sorted(br_step_stats.items()):
+            sent = stats.get("sent", 0)
+            opened = stats.get("opened", 0)
+            rate = f"{(opened / sent * 100):.0f}%" if sent else "—"
+            br_rows.append(
+                {"Step": step_names.get(step, f"Step {step}"), "Sent": sent,
+                 "Opened": opened, "Open rate": rate}
+            )
+        st.dataframe(pd.DataFrame(br_rows), use_container_width=True, hide_index=True)
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -1506,6 +1770,7 @@ def main():
         "🤖 AI Lead Analysis": render_analysis_section,
         "📧 AI Outreach": render_outreach_section,
         "📨 Docly": render_docly_section,
+        "🚀 BulkReach": render_bulkreach_section,
         "📈 Reporting": render_reporting_section,
     }
     page_renderers[selected]()
