@@ -41,6 +41,13 @@ logger = get_logger()
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
 
+# Separate from _scheduler_lock (which only guards "start the background
+# thread once"). This one serializes actual send-check runs: without it,
+# a manual "Check & Send Now" click landing at the same moment as the
+# background thread's own tick could both see the same contact as due
+# and both send it — a duplicate email to the same lead.
+_run_lock = threading.Lock()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -111,8 +118,15 @@ def _send_step(seq: dict, step: int, summary: dict):
 def run_one_check() -> dict:
     """
     Run a single due-check-and-send pass. Safe to call manually (e.g. from
-    a "Check & Send Now" button) as well as from the background loop.
+    a "Check & Send Now" button) as well as from the background loop —
+    the two are serialized via _run_lock so they can never both pick up
+    and send the same due contact at once.
     """
+    with _run_lock:
+        return _run_one_check_locked()
+
+
+def _run_one_check_locked() -> dict:
     summary = {
         "checked": 0, "sent": 0, "failed": 0,
         "skipped_disabled": 0, "skipped_limit": 0, "released": 0,

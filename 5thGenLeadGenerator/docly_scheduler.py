@@ -36,6 +36,11 @@ logger = get_logger()
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
 
+# See bulkreach_scheduler.py's identical comment: this serializes actual
+# send-check runs so a manual button click and the background thread's
+# tick can never both send the same due contact at once.
+_run_lock = threading.Lock()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -57,9 +62,15 @@ def _first_line_as_subject(body: str, fallback: str) -> str:
 def run_one_check() -> dict:
     """
     Run a single due-check-and-send pass. Safe to call manually (e.g. from
-    a "Check & Send Now" button) as well as from the background loop.
-    Returns a small summary dict for display.
+    a "Check & Send Now" button) as well as from the background loop —
+    serialized via _run_lock so it can never double-send a due contact.
     """
+    with _run_lock:
+        return _run_one_check_locked()
+
+
+def _run_one_check_locked() -> dict:
+    """Returns a small summary dict for display."""
     summary = {"checked": 0, "sent": 0, "failed": 0, "skipped_disabled": 0, "skipped_limit": 0}
 
     sending_on = config.SMTP_ENABLED and database.docly_sending_enabled()
