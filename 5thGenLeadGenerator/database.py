@@ -14,14 +14,126 @@ No scraping or AI computation happens in this module — it only stores
 and retrieves data that website_research.py / ai_analysis.py produce.
 """
 
-import sqlite3
 import re
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import libsql_client
+
 import config
+
+# ---------------------------------------------------------------------------
+# Connection layer
+# ---------------------------------------------------------------------------
+# Two backends, same SQL everywhere else in this file:
+#   - Turso (libSQL cloud) when config.turso_configured() is True — this is
+#     what makes data survive Streamlit Community Cloud's redeploys and
+#     sleep/wake cycles (its local filesystem is wiped on both).
+#   - a local SQLite file otherwise (plain local development).
+# libsql_client's "file:" URL scheme uses the real sqlite3 engine
+# internally, so the exact same SQL runs unchanged either way.
+#
+# The rest of this module was written against sqlite3's ergonomics
+# (conn.execute(sql, params).fetchone()/.fetchall(), dict(row), cur.lastrowid).
+# _CompatConnection/_CompatCursor below reproduce exactly that surface on
+# top of libsql_client, so nothing past this section had to change.
+
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is not None:
+        return _client
+
+    if config.turso_configured():
+        _client = libsql_client.create_client_sync(
+            config.TURSO_DATABASE_URL, auth_token=config.TURSO_AUTH_TOKEN
+        )
+    else:
+        Path(config.DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        _client = libsql_client.create_client_sync(f"file:{config.DATABASE_PATH}")
+
+    _client.execute("PRAGMA foreign_keys = ON;")
+    return _client
+
+
+def close_client():
+    """Not needed by the app itself (the client is meant to live for the
+    whole process). Useful for short scripts/tests so the process can
+    exit cleanly instead of waiting on libsql_client's background thread."""
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
+
+
+class _CompatCursor:
+    """Mimics sqlite3.Cursor closely enough for this file's usage:
+    fetchone()/fetchall()/iteration, each row a dict (so both row["col"]
+    and dict(row) work, same as this file already assumed with sqlite3.Row)."""
+
+    def __init__(self, result_set):
+        self._rows = (
+            [dict(zip(result_set.columns, r)) for r in result_set.rows]
+            if result_set.columns else []
+        )
+        self._idx = 0
+        self._result_set = result_set
+
+    def fetchone(self):
+        if self._idx >= len(self._rows):
+            return None
+        row = self._rows[self._idx]
+        self._idx += 1
+        return row
+
+    def fetchall(self):
+        rows = self._rows[self._idx:]
+        self._idx = len(self._rows)
+        return rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    @property
+    def lastrowid(self):
+        return self._result_set.last_insert_rowid
+
+    @property
+    def rowcount(self):
+        return self._result_set.rows_affected
+
+
+class _CompatConnection:
+    def __init__(self, client):
+        self._client = client
+
+    def execute(self, sql, params=()):
+        rs = self._client.execute(sql, list(params) if params else [])
+        return _CompatCursor(rs)
+
+    def executescript(self, script: str):
+        # Strip `-- ...` comments first (they may contain a literal ';'
+        # inside the comment text itself, which would otherwise break a
+        # naive split — none of this file's schema string literals
+        # contain "--", so this is safe here) then split on ';'.
+        no_comments = re.sub(r"--[^\n]*", "", script)
+        for statement in no_comments.split(";"):
+            statement = statement.strip()
+            if statement:
+                self._client.execute(statement)
+
+    def commit(self):
+        pass  # each execute() is already committed (autocommit) — no-op kept
+              # only so existing "with get_connection() as conn: ... " call
+              # sites that never call conn.commit() explicitly still work
+
+    def close(self):
+        pass  # the underlying client is a long-lived singleton (see
+              # _get_client) — nothing to close per "with" block
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -310,11 +422,10 @@ def _now() -> str:
 
 @contextmanager
 def get_connection():
-    """Yield a SQLite connection with sane defaults, always closed after use."""
-    Path(config.DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(config.DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
+    """Yield a connection with sane defaults, always closed after use.
+    Backed by Turso when configured, else a local SQLite file — see the
+    connection-layer comment near the top of this file."""
+    conn = _CompatConnection(_get_client())
     try:
         yield conn
         conn.commit()

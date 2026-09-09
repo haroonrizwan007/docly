@@ -2,6 +2,11 @@ streamlit>=1.32,<2.0
 pandas>=2.0,<3.0
 python-dotenv>=1.0,<2.0
 
+# Persistent database (Turso/libSQL) — also used for plain local SQLite
+# via its file: URL scheme, so this replaces the stdlib sqlite3 usage
+# throughout database.py.
+libsql-client>=0.3,<0.4
+
 # Phase 2 — website research (lightweight HTTP fetch + HTML parsing only)
 requests>=2.31,<3.0
 beautifulsoup4>=4.12,<5.0

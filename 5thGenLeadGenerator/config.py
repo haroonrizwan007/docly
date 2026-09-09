@@ -194,6 +194,24 @@ DATABASE_PATH = _get_string(
     str(_DEFAULT_DATA_DIR / "app.db"),
 )
 
+# ============================================================================
+# PERSISTENT DATABASE (Turso) — OPTIONAL but strongly recommended once
+# deployed. Streamlit Community Cloud's local filesystem (including the
+# SQLite file at DATABASE_PATH above) is NOT persistent: it is wiped on
+# every redeploy and on every sleep/wake cycle. Setting these two makes
+# the app connect to a free Turso (libSQL, SQLite-compatible) database
+# instead, which survives both. Leave both blank for local development —
+# the app falls back to the plain local SQLite file with zero changes
+# needed. Get these two values from your Turso database's "Connect"
+# panel (Database URL + a generated token) — set them via Streamlit's
+# Secrets panel when deployed, never commit them to the repo.
+TURSO_DATABASE_URL = _get_string("TURSO_DATABASE_URL", "")
+TURSO_AUTH_TOKEN = _get_string("TURSO_AUTH_TOKEN", "")
+
+
+def turso_configured() -> bool:
+    return bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)
+
 
 # ============================================================================
 # CSV STORAGE
