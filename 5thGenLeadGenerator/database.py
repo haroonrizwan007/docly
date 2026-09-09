@@ -49,8 +49,21 @@ def _get_client():
         return _client
 
     if config.turso_configured():
+        # libsql:// (and wss://) use a WebSocket connection (the Hrana
+        # protocol), which fails with a WSServerHandshakeError in several
+        # hosted/containerized environments — a known libsql-client-py
+        # issue, not specific to this app. https:// uses the same Hrana
+        # protocol over plain HTTP instead, which works reliably in those
+        # same environments (Streamlit Community Cloud included).
+        url = config.TURSO_DATABASE_URL
+        if url.startswith("libsql://"):
+            url = "https://" + url[len("libsql://"):]
+        elif url.startswith("wss://"):
+            url = "https://" + url[len("wss://"):]
+        elif url.startswith("ws://"):
+            url = "http://" + url[len("ws://"):]
         _client = libsql_client.create_client_sync(
-            config.TURSO_DATABASE_URL, auth_token=config.TURSO_AUTH_TOKEN
+            url, auth_token=config.TURSO_AUTH_TOKEN
         )
     else:
         Path(config.DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
