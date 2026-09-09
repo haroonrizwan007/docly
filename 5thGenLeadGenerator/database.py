@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS bulkreach_contacts (
     normalized_email    TEXT NOT NULL UNIQUE,
     source_batch        TEXT,
     crm_stage           TEXT NOT NULL DEFAULT 'New',
+    timezone            TEXT,    -- IANA name e.g. 'Europe/Kyiv'; NULL = no restriction
     created_at          TEXT NOT NULL
 );
 
@@ -456,6 +457,13 @@ def _migrate_schema():
             conn.execute(
                 "ALTER TABLE docly_contacts ADD COLUMN crm_stage TEXT NOT NULL DEFAULT 'New'"
             )
+
+        bulkreach_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(bulkreach_contacts)").fetchall()
+        }
+        if "timezone" not in bulkreach_cols:
+            conn.execute("ALTER TABLE bulkreach_contacts ADD COLUMN timezone TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -1583,6 +1591,33 @@ def bulkreach_set_daily_limit(n: int):
     bulkreach_set_setting("daily_limit", str(max(1, int(n))))
 
 
+def bulkreach_get_business_hours() -> tuple:
+    """(start_hour, end_hour) in the CONTACT's local time — a contact with
+    no timezone set is always considered "in business hours" (no restriction)."""
+    try:
+        start = int(bulkreach_get_setting("business_hours_start", "9"))
+    except (TypeError, ValueError):
+        start = 9
+    try:
+        end = int(bulkreach_get_setting("business_hours_end", "18"))
+    except (TypeError, ValueError):
+        end = 18
+    return start, end
+
+
+def bulkreach_set_business_hours(start_hour: int, end_hour: int):
+    bulkreach_set_setting("business_hours_start", str(max(0, min(23, int(start_hour)))))
+    bulkreach_set_setting("business_hours_end", str(max(0, min(23, int(end_hour)))))
+
+
+def bulkreach_timezone_gating_enabled() -> bool:
+    return bulkreach_get_setting("timezone_gating_enabled", "false") == "true"
+
+
+def bulkreach_set_timezone_gating_enabled(enabled: bool):
+    bulkreach_set_setting("timezone_gating_enabled", "true" if enabled else "false")
+
+
 def bulkreach_get_template(step: int, default: str = "") -> str:
     return bulkreach_get_setting(f"template_step_{step}", default)
 
@@ -1658,6 +1693,7 @@ def bulkreach_import_contacts(rows: list[dict], source_batch: str = "") -> dict:
         for row in rows:
             email = (row.get("email") or "").strip()
             business_name = (row.get("business_name") or "").strip()
+            tz = (row.get("timezone") or "").strip() or None
             norm_email = normalize_email(email)
 
             if not norm_email or "@" not in norm_email:
@@ -1675,10 +1711,10 @@ def bulkreach_import_contacts(rows: list[dict], source_batch: str = "") -> dict:
             cur = conn.execute(
                 """
                 INSERT INTO bulkreach_contacts
-                    (business_name, email, normalized_email, source_batch, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (business_name, email, normalized_email, source_batch, timezone, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (business_name, email, norm_email, source_batch, now),
+                (business_name, email, norm_email, source_batch, tz, now),
             )
             contact_id = cur.lastrowid
 
@@ -1706,6 +1742,49 @@ def bulkreach_get_queued_count() -> int:
             "SELECT COUNT(*) AS n FROM bulkreach_sequences WHERE status = 'QUEUED'"
         ).fetchone()
         return row["n"] if row else 0
+
+
+def bulkreach_get_queued_candidates(limit: int) -> list[dict]:
+    """
+    Read-only: oldest-queued-first candidates, WITHOUT changing their
+    status. Used so the scheduler can filter by business-hours (per
+    contact's timezone) before deciding which ones to actually activate —
+    bulkreach_release_queue_batch() (below) is the older, simpler
+    "no timezone filtering" version kept for compatibility.
+    """
+    if limit <= 0:
+        return []
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, c.business_name, c.email, c.normalized_email, c.timezone
+            FROM bulkreach_sequences s
+            JOIN bulkreach_contacts c ON c.id = s.contact_id
+            WHERE s.status = 'QUEUED'
+            ORDER BY s.queued_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def bulkreach_activate_sequences(seq_ids: list[int]):
+    """Mark specific (already-selected) sequence rows ACTIVE with
+    next_send_at=now, so the next due-check sends them as Day 0."""
+    if not seq_ids:
+        return
+    now = _now()
+    with get_connection() as conn:
+        placeholders = ",".join("?" * len(seq_ids))
+        conn.execute(
+            f"""
+            UPDATE bulkreach_sequences
+            SET status = 'ACTIVE', next_send_at = ?, updated_at = ?
+            WHERE id IN ({placeholders})
+            """,
+            (now, now, *seq_ids),
+        )
 
 
 def bulkreach_release_queue_batch(n: int) -> list[dict]:
@@ -1760,7 +1839,7 @@ def bulkreach_get_due_sequences(limit: int = 50) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT s.*, c.business_name, c.email, c.normalized_email
+            SELECT s.*, c.business_name, c.email, c.normalized_email, c.timezone
             FROM bulkreach_sequences s
             JOIN bulkreach_contacts c ON c.id = s.contact_id
             WHERE s.status = 'ACTIVE' AND s.next_send_at <= ?
@@ -1830,7 +1909,7 @@ def bulkreach_get_all_sequences() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT s.*, c.business_name, c.email, c.crm_stage
+            SELECT s.*, c.business_name, c.email, c.crm_stage, c.timezone
             FROM bulkreach_sequences s
             JOIN bulkreach_contacts c ON c.id = s.contact_id
             ORDER BY

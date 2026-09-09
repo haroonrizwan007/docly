@@ -15,9 +15,13 @@ Every tick:
     1. Check the "Enable Sending" toggle + .env SMTP_ENABLED.
     2. Send any already-ACTIVE sequence whose Day 2 / Day 7 follow-up is
        due (existing contacts take priority over releasing new ones).
+       If timezone gating is on, a contact only actually sends when it's
+       currently business hours in THEIR timezone — otherwise it's held
+       and reconsidered on a later tick (nothing is lost or skipped).
     3. With whatever's left of today's daily limit, release that many
        QUEUED contacts to ACTIVE and send their Day 0 message
-       immediately, in the same pass.
+       immediately, in the same pass — again subject to the same
+       business-hours gate per contact when enabled.
     4. Whatever's still QUEUED stays QUEUED — it's picked up automatically
        on a later day once today's quota resets.
 
@@ -29,6 +33,7 @@ exactly where it left off.
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import config
 import database
@@ -51,6 +56,23 @@ _run_lock = threading.Lock()
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _within_business_hours(tz_name: str, start_hour: int, end_hour: int) -> bool:
+    """
+    True if it's currently between start_hour and end_hour in the
+    contact's own local timezone. A contact with no timezone set (or an
+    unrecognized one) is always treated as "within hours" — timezone
+    gating only restricts contacts that actually have a timezone on file,
+    it never blocks the ones that don't.
+    """
+    if not tz_name:
+        return True
+    try:
+        local_hour = datetime.now(ZoneInfo(tz_name)).hour
+    except Exception:
+        return True  # unknown/invalid timezone string — don't block on it
+    return start_hour <= local_hour < end_hour
 
 
 def _personalize(html: str, business_name: str) -> str:
@@ -164,24 +186,47 @@ def _run_one_check_locked() -> dict:
         summary["skipped_limit"] = len(due)
         return summary
 
-    # 1) Existing follow-ups (Day 2 / Day 7) already due — these take
-    #    priority over releasing brand-new contacts.
-    due = database.bulkreach_get_due_sequences(limit=quota)
-    summary["checked"] += len(due)
-    for seq in due:
-        _send_step(seq, seq["current_step"] + 1, summary)
+    gating_on = database.bulkreach_timezone_gating_enabled()
+    hours_start, hours_end = database.bulkreach_get_business_hours()
 
-    sent_this_pass = summary["sent"]
+    # 1) Existing follow-ups (Day 2 / Day 7) already due — these take
+    #    priority over releasing brand-new contacts. Over-fetch a bit
+    #    since some may be held back by the business-hours gate below
+    #    (they just get reconsidered on a later tick, nothing is lost).
+    due = database.bulkreach_get_due_sequences(limit=max(quota * 3, quota))
+    sent_this_pass = 0
+    for seq in due:
+        if sent_this_pass >= quota:
+            break
+        if gating_on and not _within_business_hours(seq.get("timezone"), hours_start, hours_end):
+            continue  # not business hours for this contact yet — try again next tick
+        summary["checked"] += 1
+        before = summary["sent"]
+        _send_step(seq, seq["current_step"] + 1, summary)
+        if summary["sent"] > before:
+            sent_this_pass += 1
+
     remaining = quota - sent_this_pass
 
     # 2) Fill the rest of today's quota by releasing QUEUED contacts
-    #    (oldest-imported first) and sending their Day 0 immediately.
+    #    (oldest-imported first, filtered to ones in business hours right
+    #    now if gating is on) and sending their Day 0 immediately.
     if remaining > 0:
-        released = database.bulkreach_release_queue_batch(remaining)
-        summary["released"] = len(released)
-        summary["checked"] += len(released)
-        for seq in released:
-            _send_step(seq, 1, summary)
+        candidates = database.bulkreach_get_queued_candidates(limit=max(remaining * 3, remaining))
+        to_activate = []
+        for seq in candidates:
+            if len(to_activate) >= remaining:
+                break
+            if gating_on and not _within_business_hours(seq.get("timezone"), hours_start, hours_end):
+                continue  # stays QUEUED — picked up once it's their business hours
+            to_activate.append(seq)
+
+        if to_activate:
+            database.bulkreach_activate_sequences([s["id"] for s in to_activate])
+            summary["released"] = len(to_activate)
+            summary["checked"] += len(to_activate)
+            for seq in to_activate:
+                _send_step(seq, 1, summary)
 
     return summary
 

@@ -1276,6 +1276,18 @@ def render_docly_section():
 
     # --- Manual check + sequence status ---------------------------------
     st.subheader("🔄 Sequence Status")
+
+    gate_env = config.SMTP_ENABLED
+    gate_toggle = database.docly_sending_enabled()
+    gate_creds = smtp_ok
+    all_gates_open = gate_env and gate_toggle and gate_creds
+    with st.expander("🩺 Why isn't it sending? (click to check)", expanded=not all_gates_open):
+        st.markdown(f"- `.env`/Secrets `SMTP_ENABLED=true`: {'✅ Yes' if gate_env else '❌ No — set SMTP_ENABLED to \"true\" in Secrets'}")
+        st.markdown(f"- 'Enable Sending' toggle above: {'✅ On' if gate_toggle else '❌ Off — turn the toggle above ON'}")
+        st.markdown(f"- Business mail (host/user/password) filled in: {'✅ Yes' if gate_creds else '❌ No — fill SMTP_HOST/USER/PASSWORD/FROM_EMAIL'}")
+        if all_gates_open:
+            st.success("All 3 are green — sending should work. Click the button below.")
+
     if st.button("Check & Send Due Messages Now", key="docly_check_now"):
         result = docly_scheduler.run_one_check()
         st.info(
@@ -1417,6 +1429,44 @@ def render_bulkreach_section():
         st.success(f"Daily limit set to {int(new_limit)}.")
         st.rerun()
 
+    st.divider()
+
+    # --- Timezone-aware sending (optional) ---------------------------------
+    st.subheader("🌍 Timezone-Aware Sending (optional)")
+    st.caption(
+        "Add an optional `timezone` column to your CSV (e.g. `Europe/Kyiv`, "
+        "`America/New_York`, `Asia/Dubai`) — when this is turned on, each "
+        "contact only sends during business hours in THEIR own timezone, "
+        "not yours. Contacts with no timezone in the CSV are never held "
+        "back by this — only ones you've actually given a timezone."
+    )
+    hours_start, hours_end = database.bulkreach_get_business_hours()
+    gating_currently_on = database.bulkreach_timezone_gating_enabled()
+
+    tz_toggle = st.toggle(
+        "Only send during each contact's local business hours",
+        value=gating_currently_on, key="bulkreach_tz_gating_toggle",
+    )
+    if tz_toggle != gating_currently_on:
+        database.bulkreach_set_timezone_gating_enabled(tz_toggle)
+        st.rerun()
+
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        new_start = st.number_input(
+            "Business hours start (24h, contact's local time)",
+            min_value=0, max_value=23, value=hours_start, key="bulkreach_hours_start",
+        )
+    with col_h2:
+        new_end = st.number_input(
+            "Business hours end (24h, contact's local time)",
+            min_value=0, max_value=23, value=hours_end, key="bulkreach_hours_end",
+        )
+    if st.button("💾 Save Business Hours", key="bulkreach_save_hours"):
+        database.bulkreach_set_business_hours(int(new_start), int(new_end))
+        st.success(f"Business hours set to {int(new_start)}:00–{int(new_end)}:00 (each contact's local time).")
+        st.rerun()
+
     # --- Sending toggle ----------------------------------------------------
     currently_on = database.bulkreach_sending_enabled()
     toggle = st.toggle(
@@ -1466,6 +1516,8 @@ def render_bulkreach_section():
     st.subheader("📤 Import Leads (CSV — supports large lists)")
     st.caption(
         "CSV needs a `business_name` column and an `email` column. "
+        "Optional `timezone` column (e.g. `Europe/Kyiv`) enables the "
+        "business-hours setting above for that contact. "
         "New contacts join the queue — they do NOT send immediately."
     )
     uploaded = st.file_uploader("Upload CSV", type=["csv"], key="bulkreach_csv_uploader")
@@ -1480,6 +1532,7 @@ def render_bulkreach_section():
             cols_lower = {c.lower().strip(): c for c in df.columns}
             name_col = cols_lower.get("business_name") or cols_lower.get("name")
             email_col = cols_lower.get("email")
+            tz_col = cols_lower.get("timezone")
 
             if not email_col:
                 st.error("CSV must have an `email` column.")
@@ -1491,6 +1544,7 @@ def render_bulkreach_section():
                         {
                             "business_name": str(row.get(name_col, "")).strip() if name_col else "",
                             "email": str(row.get(email_col, "")).strip(),
+                            "timezone": str(row.get(tz_col, "")).strip() if tz_col else "",
                         }
                         for _, row in df.iterrows()
                     ]
@@ -1510,6 +1564,19 @@ def render_bulkreach_section():
     col_q1.metric("Still queued", queued_count)
     col_q2.metric("Today's remaining quota", max(daily_limit - sent_today, 0))
 
+    # Diagnostic — shows the exact 3 gates that must ALL be true before
+    # anything sends, so "why didn't it send" never has to be guessed.
+    gate_env = config.SMTP_ENABLED
+    gate_toggle = database.bulkreach_sending_enabled()
+    gate_creds = smtp_ok
+    all_gates_open = gate_env and gate_toggle and gate_creds
+    with st.expander("🩺 Why isn't it sending? (click to check)", expanded=not all_gates_open):
+        st.markdown(f"- `.env`/Secrets `SMTP_ENABLED=true`: {'✅ Yes' if gate_env else '❌ No — set SMTP_ENABLED to \"true\" in Secrets'}")
+        st.markdown(f"- 'Enable Sending' toggle above: {'✅ On' if gate_toggle else '❌ Off — turn the toggle above ON'}")
+        st.markdown(f"- Business mail (host/user/password) filled in: {'✅ Yes' if gate_creds else '❌ No — fill SMTP_HOST/USER/PASSWORD/FROM_EMAIL'}")
+        if all_gates_open:
+            st.success("All 3 are green — sending should work. Click the button below.")
+
     if st.button("Check & Send Due Messages Now", key="bulkreach_check_now"):
         result = bulkreach_scheduler.run_one_check()
         st.info(
@@ -1528,12 +1595,12 @@ def render_bulkreach_section():
 
         df_seq = pd.DataFrame(sequences)
         display_cols = [
-            "business_name", "email", "crm_stage", "status", "current_step",
+            "business_name", "email", "timezone", "crm_stage", "status", "current_step",
             "opened", "next_send_at", "last_sent_at",
         ]
         display_cols = [c for c in display_cols if c in df_seq.columns]
         st.dataframe(
-            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage"}),
+            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage", "timezone": "Timezone"}),
             use_container_width=True, hide_index=True,
         )
 
