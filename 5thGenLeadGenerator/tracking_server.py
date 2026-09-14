@@ -43,6 +43,7 @@ _server_lock = threading.Lock()
 _RECORDERS = {
     "docly": database.docly_record_open,
     "bulkreach": database.bulkreach_record_open,
+    "roofing": database.roofing_record_open,
 }
 
 
