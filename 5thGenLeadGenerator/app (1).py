@@ -324,6 +324,7 @@ def render_sidebar() -> str:
     )
 
     nav_options = [
+        "🏠 Dashboard",
         "📁 Campaigns",
         "📥 Import Leads",
         "📊 Leads & Status",
@@ -372,6 +373,99 @@ def render_sidebar() -> str:
 # ---------------------------------------------------------------------------
 # Campaigns
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dashboard — one-glance, plain-language summary. No jargon, just: how much
+# has gone out, how much is left, and whether opens are being tracked.
+# This is the default landing page.
+# ---------------------------------------------------------------------------
+def render_dashboard_section():
+    st.header("🏠 Dashboard")
+    st.caption("A quick look at where things stand — no need to dig through tabs for this.")
+
+    docly_overview = database.reporting_docly_overview()
+    docly_sent_today = database.docly_sent_today_count()
+    bulk_overview = database.reporting_bulkreach_overview()
+    bulk_sent_today = database.bulkreach_sent_today_count()
+    bulk_daily_limit = database.bulkreach_get_daily_limit()
+
+    tracking_live = config.docly_tracking_ready()
+    smtp_ok = config.docly_smtp_configured()
+
+    # --- Top status strip ---------------------------------------------------
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if smtp_ok:
+            st.success(f"✅ Business mail connected: **{config.SMTP_FROM_EMAIL}**")
+        else:
+            st.warning("⚠️ Business mail not set up yet — go to Docly or BulkReach to fix this.")
+    with col_b:
+        if tracking_live:
+            st.success("✅ Email open tracking is ON")
+        else:
+            st.warning("⚠️ Email open tracking is OFF — opens won't be recorded until this is on.")
+
+    st.divider()
+
+    # --- Docly card ----------------------------------------------------------
+    st.subheader("📨 Docly")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Sent today", docly_sent_today)
+    d2.metric("Sent — all time", docly_overview["total_sent"])
+    d3.metric("Total contacts", docly_overview["total_contacts"])
+    docly_open_pct = (
+        docly_overview["unique_opened_contacts"] / docly_overview["total_contacts"] * 100
+        if docly_overview["total_contacts"] else 0
+    )
+    d4.metric("Opened by", f"{docly_open_pct:.0f}%")
+    st.caption(
+        f"{docly_overview['total_sent']} email(s) sent so far out of "
+        f"{docly_overview['total_contacts']} contact(s) imported. "
+        f"{docly_overview['unique_opened_contacts']} of them have opened at least one email."
+    )
+
+    st.divider()
+
+    # --- BulkReach card --------------------------------------------------------
+    st.subheader("🚀 BulkReach")
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Sent today", f"{bulk_sent_today} / {bulk_daily_limit}")
+    b2.metric("Still waiting to send", bulk_overview["queued"])
+    b3.metric("Sent — all time", bulk_overview["total_sent"])
+    bulk_open_pct = (
+        bulk_overview["unique_opened_contacts"] / bulk_overview["total_contacts"] * 100
+        if bulk_overview["total_contacts"] else 0
+    )
+    b4.metric("Opened by", f"{bulk_open_pct:.0f}%")
+
+    if bulk_overview["queued"] > 0:
+        days_left = -(-bulk_overview["queued"] // max(bulk_daily_limit, 1))  # ceiling division
+        st.caption(
+            f"{bulk_overview['total_sent']} email(s) sent so far. "
+            f"{bulk_overview['queued']} contact(s) are still waiting in the queue — "
+            f"at {bulk_daily_limit}/day, that's roughly **{days_left} more day(s)** "
+            f"to finish sending to everyone (assuming the app stays awake)."
+        )
+    else:
+        st.caption(
+            f"{bulk_overview['total_sent']} email(s) sent so far. "
+            f"Nothing left waiting in the queue right now."
+        )
+
+    if not tracking_live:
+        st.info(
+            "💡 Open tracking (the \"Opened by\" numbers above) only works once "
+            "`TRACKING_ENABLED` and `TRACKING_BASE_URL` are set in Secrets — "
+            "see the Docly or BulkReach tab for the exact values."
+        )
+    elif docly_overview["total_sent"] + bulk_overview["total_sent"] > 0 and \
+            docly_overview["unique_opened_contacts"] + bulk_overview["unique_opened_contacts"] == 0:
+        st.caption(
+            "No opens recorded yet — that's normal if emails were sent very "
+            "recently, or if recipients haven't opened them yet. This isn't "
+            "something you need to fix."
+        )
+
+
 def render_campaign_section():
     st.header("📁 Campaigns")
 
@@ -1429,6 +1523,44 @@ def render_bulkreach_section():
         st.success(f"Daily limit set to {int(new_limit)}.")
         st.rerun()
 
+    st.divider()
+
+    # --- Timezone-aware sending (optional) ---------------------------------
+    st.subheader("🌍 Timezone-Aware Sending (optional)")
+    st.caption(
+        "Add an optional `timezone` column to your CSV (e.g. `Europe/Kyiv`, "
+        "`America/New_York`, `Asia/Dubai`) — when this is turned on, each "
+        "contact only sends during business hours in THEIR own timezone, "
+        "not yours. Contacts with no timezone in the CSV are never held "
+        "back by this — only ones you've actually given a timezone."
+    )
+    hours_start, hours_end = database.bulkreach_get_business_hours()
+    gating_currently_on = database.bulkreach_timezone_gating_enabled()
+
+    tz_toggle = st.toggle(
+        "Only send during each contact's local business hours",
+        value=gating_currently_on, key="bulkreach_tz_gating_toggle",
+    )
+    if tz_toggle != gating_currently_on:
+        database.bulkreach_set_timezone_gating_enabled(tz_toggle)
+        st.rerun()
+
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        new_start = st.number_input(
+            "Business hours start (24h, contact's local time)",
+            min_value=0, max_value=23, value=hours_start, key="bulkreach_hours_start",
+        )
+    with col_h2:
+        new_end = st.number_input(
+            "Business hours end (24h, contact's local time)",
+            min_value=0, max_value=23, value=hours_end, key="bulkreach_hours_end",
+        )
+    if st.button("💾 Save Business Hours", key="bulkreach_save_hours"):
+        database.bulkreach_set_business_hours(int(new_start), int(new_end))
+        st.success(f"Business hours set to {int(new_start)}:00–{int(new_end)}:00 (each contact's local time).")
+        st.rerun()
+
     # --- Sending toggle ----------------------------------------------------
     currently_on = database.bulkreach_sending_enabled()
     toggle = st.toggle(
@@ -1478,6 +1610,8 @@ def render_bulkreach_section():
     st.subheader("📤 Import Leads (CSV — supports large lists)")
     st.caption(
         "CSV needs a `business_name` column and an `email` column. "
+        "Optional `timezone` column (e.g. `Europe/Kyiv`) enables the "
+        "business-hours setting above for that contact. "
         "New contacts join the queue — they do NOT send immediately."
     )
     uploaded = st.file_uploader("Upload CSV", type=["csv"], key="bulkreach_csv_uploader")
@@ -1492,6 +1626,7 @@ def render_bulkreach_section():
             cols_lower = {c.lower().strip(): c for c in df.columns}
             name_col = cols_lower.get("business_name") or cols_lower.get("name")
             email_col = cols_lower.get("email")
+            tz_col = cols_lower.get("timezone")
 
             if not email_col:
                 st.error("CSV must have an `email` column.")
@@ -1503,6 +1638,7 @@ def render_bulkreach_section():
                         {
                             "business_name": str(row.get(name_col, "")).strip() if name_col else "",
                             "email": str(row.get(email_col, "")).strip(),
+                            "timezone": str(row.get(tz_col, "")).strip() if tz_col else "",
                         }
                         for _, row in df.iterrows()
                     ]
@@ -1553,12 +1689,12 @@ def render_bulkreach_section():
 
         df_seq = pd.DataFrame(sequences)
         display_cols = [
-            "business_name", "email", "crm_stage", "status", "current_step",
+            "business_name", "email", "timezone", "crm_stage", "status", "current_step",
             "opened", "next_send_at", "last_sent_at",
         ]
         display_cols = [c for c in display_cols if c in df_seq.columns]
         st.dataframe(
-            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage"}),
+            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage", "timezone": "Timezone"}),
             use_container_width=True, hide_index=True,
         )
 
@@ -1788,6 +1924,7 @@ def main():
     selected = render_sidebar()
 
     page_renderers = {
+        "🏠 Dashboard": render_dashboard_section,
         "📁 Campaigns": render_campaign_section,
         "📥 Import Leads": render_import_section,
         "📊 Leads & Status": render_leads_section,
