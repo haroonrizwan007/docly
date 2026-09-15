@@ -42,6 +42,7 @@ import ai_analysis
 import ai_outreach
 import docly_scheduler
 import bulkreach_scheduler
+import roofing_scheduler
 import tracking_server
 from ai_provider import get_provider
 from logger_setup import get_logger
@@ -283,7 +284,169 @@ st.markdown(
         margin: 4px 0 0 0;
         font-size: 0.9rem;
     }
+
+    /* ============================================================
+       DASHBOARD — custom-built components (not default st.metric),
+       distinct type system, two accent tracks (indigo=Docly,
+       teal=BulkReach) so the two products read as visually separate
+       even while sharing one page.
+       ============================================================ */
+    .db-num {
+        font-family: 'Sora', 'Segoe UI', sans-serif;
+    }
+
+    .db-pillrow {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .db-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 14px;
+        border-radius: 100px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        font-family: 'Inter', sans-serif;
+    }
+    .db-pill.ok {
+        background: #E9F9EF;
+        color: #166534;
+        border: 1px solid #BBF0CC;
+    }
+    .db-pill.warn {
+        background: #FEF3E2;
+        color: #92400E;
+        border: 1px solid #FCE0B0;
+    }
+
+    .db-hero {
+        background: linear-gradient(135deg, #241E45 0%, #453A8C 55%, #6C5CE7 100%);
+        border-radius: 18px;
+        padding: 28px 30px;
+        margin-bottom: 24px;
+        color: white;
+        position: relative;
+        overflow: hidden;
+    }
+    .db-hero::after {
+        content: "";
+        position: absolute;
+        right: -60px; top: -60px;
+        width: 220px; height: 220px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 70%);
+    }
+    .db-hero-label {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.85rem;
+        color: #D8D4F7;
+        font-weight: 500;
+        margin: 0 0 6px 0;
+    }
+    .db-hero-num {
+        font-size: 3rem;
+        font-weight: 700;
+        line-height: 1;
+        margin: 0;
+        letter-spacing: -0.02em;
+    }
+    .db-hero-sub {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.88rem;
+        color: #C9C4F0;
+        margin-top: 8px;
+    }
+    .db-hero-bar-track {
+        margin-top: 18px;
+        height: 8px;
+        border-radius: 100px;
+        background: rgba(255,255,255,0.16);
+        overflow: hidden;
+    }
+    .db-hero-bar-fill {
+        height: 100%;
+        border-radius: 100px;
+        background: linear-gradient(90deg, #A9F3D0 0%, #6EE7B7 100%);
+    }
+
+    .db-panel {
+        background: #FFFFFF;
+        border-radius: 16px;
+        padding: 22px 24px;
+        height: 100%;
+        border-top: 3px solid var(--panel-accent, #6C5CE7);
+        box-shadow: 0 1px 2px rgba(20,18,31,0.04);
+    }
+    .db-panel-title {
+        font-family: 'Sora', sans-serif;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #15132A;
+        margin: 0 0 4px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .db-panel-tag {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.78rem;
+        color: #8B87A8;
+        margin-bottom: 18px;
+    }
+    .db-statgrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px 20px;
+    }
+    .db-stat-num {
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: #15132A;
+        line-height: 1.1;
+    }
+    .db-stat-label {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.76rem;
+        color: #8B87A8;
+        margin-top: 3px;
+        font-weight: 500;
+    }
+    .db-progress-row {
+        margin-top: 18px;
+    }
+    .db-progress-labels {
+        display: flex;
+        justify-content: space-between;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.78rem;
+        color: #6B6785;
+        margin-bottom: 6px;
+    }
+    .db-progress-track {
+        height: 10px;
+        border-radius: 100px;
+        background: #F0EEFB;
+        overflow: hidden;
+    }
+    .db-progress-fill {
+        height: 100%;
+        border-radius: 100px;
+        background: linear-gradient(90deg, var(--panel-accent, #6C5CE7) 0%, var(--panel-accent-light, #9C90F2) 100%);
+    }
+    .db-footnote {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.82rem;
+        color: #6B6785;
+        margin-top: 16px;
+        line-height: 1.5;
+    }
     </style>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 
     <div class="fivegen-banner">
         <h1>📋 5thGenLeadGenerator</h1>
@@ -324,6 +487,7 @@ def render_sidebar() -> str:
     )
 
     nav_options = [
+        "🏠 Dashboard",
         "📁 Campaigns",
         "📥 Import Leads",
         "📊 Leads & Status",
@@ -332,6 +496,7 @@ def render_sidebar() -> str:
         "📧 AI Outreach",
         "📨 Docly",
         "🚀 BulkReach",
+        "🏘️ Roofing",
         "📈 Reporting",
     ]
     selected = st.sidebar.radio(
@@ -372,6 +537,175 @@ def render_sidebar() -> str:
 # ---------------------------------------------------------------------------
 # Campaigns
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dashboard — one-glance, plain-language summary. No jargon, just: how much
+# has gone out, how much is left, and whether opens are being tracked.
+# This is the default landing page.
+# ---------------------------------------------------------------------------
+def render_dashboard_section():
+    docly_overview = database.reporting_docly_overview()
+    docly_sent_today = database.docly_sent_today_count()
+    bulk_overview = database.reporting_bulkreach_overview()
+    bulk_sent_today = database.bulkreach_sent_today_count()
+    bulk_daily_limit = database.bulkreach_get_daily_limit()
+
+    tracking_live = config.docly_tracking_ready()
+    smtp_ok = config.docly_smtp_configured()
+
+    docly_open_pct = (
+        docly_overview["unique_opened_contacts"] / docly_overview["total_contacts"] * 100
+        if docly_overview["total_contacts"] else 0
+    )
+    bulk_open_pct = (
+        bulk_overview["unique_opened_contacts"] / bulk_overview["total_contacts"] * 100
+        if bulk_overview["total_contacts"] else 0
+    )
+
+    combined_today = docly_sent_today + bulk_sent_today
+    combined_quota = bulk_daily_limit  # Docly has no separate cap of its own
+    hero_pct = min(100, int(bulk_sent_today / bulk_daily_limit * 100)) if bulk_daily_limit else 0
+
+    bulk_total_pipeline = bulk_overview["total_contacts"]
+    bulk_released = bulk_total_pipeline - bulk_overview["queued"]
+    bulk_drained_pct = (
+        int(bulk_released / bulk_total_pipeline * 100)
+        if bulk_total_pipeline else 0
+    )
+
+    mail_pill = (
+        f'<span class="db-pill ok">✓ Business mail connected — {config.SMTP_FROM_EMAIL}</span>'
+        if smtp_ok else
+        '<span class="db-pill warn">⚠ Business mail not set up</span>'
+    )
+    tracking_pill = (
+        '<span class="db-pill ok">✓ Open tracking live</span>'
+        if tracking_live else
+        '<span class="db-pill warn">⚠ Open tracking off</span>'
+    )
+
+    if bulk_overview["queued"] > 0:
+        days_left = -(-bulk_overview["queued"] // max(bulk_daily_limit, 1))  # ceiling division
+        queue_note = f"~{days_left} more day(s) to finish the queue at this pace"
+    else:
+        days_left = 0
+        queue_note = "Queue is empty"
+
+    st.markdown(
+        f"""
+        <div class="db-pillrow">
+            {mail_pill}
+            {tracking_pill}
+        </div>
+
+        <div class="db-hero">
+            <p class="db-hero-label">Emails sent today, across Docly + BulkReach</p>
+            <p class="db-hero-num db-num">{combined_today}</p>
+            <p class="db-hero-sub">{bulk_sent_today} of {combined_quota} of today's BulkReach quota used
+                &nbsp;·&nbsp; {docly_sent_today} from Docly</p>
+            <div class="db-hero-bar-track">
+                <div class="db-hero-bar-fill" style="width:{hero_pct}%;"></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_docly, col_bulk = st.columns(2)
+
+    with col_docly:
+        st.markdown(
+            f"""
+            <div class="db-panel" style="--panel-accent:#6C5CE7; --panel-accent-light:#9C90F2;">
+                <p class="db-panel-title">📨 Docly</p>
+                <p class="db-panel-tag">Steady, ongoing outreach — sends as soon as a lead is added</p>
+                <div class="db-statgrid">
+                    <div>
+                        <div class="db-stat-num db-num">{docly_sent_today}</div>
+                        <div class="db-stat-label">Sent today</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{docly_overview['total_sent']}</div>
+                        <div class="db-stat-label">Sent all-time</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{docly_overview['total_contacts']}</div>
+                        <div class="db-stat-label">Total contacts</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{docly_open_pct:.0f}%</div>
+                        <div class="db-stat-label">Opened by</div>
+                    </div>
+                </div>
+                <p class="db-footnote">{docly_overview['unique_opened_contacts']} contact(s) have opened at least one email.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_bulk:
+        st.markdown(
+            f"""
+            <div class="db-panel" style="--panel-accent:#0D9488; --panel-accent-light:#5EEAD4;">
+                <p class="db-panel-title">🚀 BulkReach</p>
+                <p class="db-panel-tag">Large-list campaign, paced at {bulk_daily_limit}/day</p>
+                <div class="db-statgrid">
+                    <div>
+                        <div class="db-stat-num db-num">{bulk_sent_today}/{bulk_daily_limit}</div>
+                        <div class="db-stat-label">Sent today</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{bulk_overview['queued']}</div>
+                        <div class="db-stat-label">Still queued</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{bulk_overview['total_sent']}</div>
+                        <div class="db-stat-label">Sent all-time</div>
+                    </div>
+                    <div>
+                        <div class="db-stat-num db-num">{bulk_open_pct:.0f}%</div>
+                        <div class="db-stat-label">Opened by</div>
+                    </div>
+                </div>
+                <div class="db-progress-row">
+                    <div class="db-progress-labels">
+                        <span>Campaign progress</span>
+                        <span>{bulk_released} / {bulk_total_pipeline}</span>
+                    </div>
+                    <div class="db-progress-track">
+                        <div class="db-progress-fill" style="width:{bulk_drained_pct}%;"></div>
+                    </div>
+                </div>
+                <p class="db-footnote">{queue_note}.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if not tracking_live:
+        st.markdown(
+            """
+            <p class="db-footnote" style="margin-top:20px;">
+                💡 Open tracking ("Opened by" above) only works once
+                <code>TRACKING_ENABLED</code> and <code>TRACKING_BASE_URL</code>
+                are set in Secrets — see the Docly or BulkReach tab for the exact values.
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif docly_overview["total_sent"] + bulk_overview["total_sent"] > 0 and \
+            docly_overview["unique_opened_contacts"] + bulk_overview["unique_opened_contacts"] == 0:
+        st.markdown(
+            """
+            <p class="db-footnote" style="margin-top:20px;">
+                No opens recorded yet — that's normal if emails were sent very
+                recently, or if recipients haven't opened them yet. This isn't
+                something you need to fix.
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_campaign_section():
     st.header("📁 Campaigns")
 
@@ -1647,6 +1981,252 @@ def render_bulkreach_section():
 
 
 # ---------------------------------------------------------------------------
+# Roofing — niche-specific tab. Same daily-limit + Day0/2/7 follow-up
+# model as BulkReach (fully separate tables/dashboard/tracking of its
+# own), plus a manual "Send Mail" button that sends today's batch right
+# now with a live progress bar, instead of waiting on the background
+# scheduler alone.
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def _start_roofing_scheduler():
+    roofing_scheduler.ensure_started()
+    tracking_server.ensure_started()
+    return True
+
+
+def render_roofing_section():
+    st.header("🏘️ Roofing")
+    st.caption(
+        "A separate outreach list just for roofing leads — its own "
+        "contacts, templates, daily limit, and open-tracking, completely "
+        "apart from Docly and BulkReach (same business mailbox). Upload "
+        "a CSV, then click 'Send Mail' to send today's batch right now "
+        "with a live progress bar. Day 2 / Day 7 follow-ups (and any "
+        "leftover queue) continue automatically in the background after "
+        "that, and duplicate emails are always skipped on import."
+    )
+
+    _start_roofing_scheduler()
+
+    smtp_ok = config.docly_smtp_configured()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if smtp_ok:
+            st.success(f"Business mail configured: **{config.SMTP_FROM_EMAIL}**")
+        else:
+            st.warning(
+                "Business mail not configured yet. Fill SMTP_HOST / SMTP_USER / "
+                "SMTP_PASSWORD / SMTP_FROM_EMAIL in Secrets/`.env` (same as Docly/BulkReach)."
+            )
+    with col_b:
+        sent_today = database.roofing_sent_today_count()
+        daily_limit = database.roofing_get_daily_limit()
+        st.metric("Sent today", f"{sent_today} / {daily_limit}")
+
+    if config.docly_tracking_ready():
+        st.success(f"👁️ Open tracking is live at `{config.TRACKING_BASE_URL}`.")
+    else:
+        st.warning(
+            "👁️ Open tracking is **off**. Set `TRACKING_ENABLED=true` and "
+            "`TRACKING_BASE_URL` (same setting Docly/BulkReach use) to a "
+            "publicly reachable address for opens to register."
+        )
+
+    st.subheader("📅 Daily Limit")
+    new_limit = st.number_input(
+        "How many emails (new + follow-ups combined) per day",
+        min_value=1, max_value=500, value=daily_limit, step=5,
+        key="roofing_daily_limit_input",
+    )
+    if st.button("💾 Save Daily Limit", key="roofing_save_limit"):
+        database.roofing_set_daily_limit(int(new_limit))
+        st.success(f"Daily limit set to {int(new_limit)}.")
+        st.rerun()
+
+    currently_on = database.roofing_sending_enabled()
+    toggle = st.toggle(
+        "✅ Enable Sending (turn ON when you're ready to actually send)",
+        value=currently_on, disabled=not smtp_ok, key="roofing_sending_toggle",
+    )
+    if toggle != currently_on:
+        database.roofing_set_sending_enabled(toggle)
+        st.rerun()
+
+    if not config.SMTP_ENABLED:
+        st.info("Note: `SMTP_ENABLED=false` — set it to `true` as well before sending will actually go out.")
+
+    st.divider()
+
+    st.subheader("✉️ HTML Mail Templates")
+    st.caption(
+        "Use `{business_name}` anywhere — replaced automatically per contact. "
+        "Only Day 0 is required — leave Day 2 / Day 7 blank to send just one "
+        "message with no follow-up."
+    )
+    for step, label in [(1, "Day 0 — First message"), (2, "Day 2 — Follow-up"), (3, "Day 7 — Final follow-up")]:
+        st.markdown(f"**{label}**")
+        subj_key = f"roofing_subject_{step}"
+        body_key = f"roofing_body_{step}"
+        st.text_input(
+            "Subject", value=database.roofing_get_subject(step, ""),
+            key=subj_key, placeholder="Leave blank to use a sensible default",
+        )
+        st.text_area(
+            "HTML body", value=database.roofing_get_template(step, ""),
+            height=180, key=body_key,
+        )
+    if st.button("💾 Save Templates", key="roofing_save_templates"):
+        for step in (1, 2, 3):
+            database.roofing_set_subject(step, st.session_state[f"roofing_subject_{step}"])
+            database.roofing_set_template(step, st.session_state[f"roofing_body_{step}"])
+        st.success("Templates saved.")
+
+    st.divider()
+
+    st.subheader("📤 Import Leads (CSV)")
+    st.caption(
+        "CSV needs a `business_name` column and an `email` column. "
+        "Duplicate emails already in this list are skipped automatically. "
+        "New contacts join the queue — they don't send until you click "
+        "'Send Mail' below (or the daily auto-continue picks them up)."
+    )
+    uploaded = st.file_uploader("Upload CSV", type=["csv"], key="roofing_csv_uploader")
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+        except Exception as exc:
+            st.error(f"Could not read CSV: {exc}")
+            df = None
+
+        if df is not None:
+            cols_lower = {c.lower().strip(): c for c in df.columns}
+            name_col = cols_lower.get("business_name") or cols_lower.get("name")
+            email_col = cols_lower.get("email")
+
+            if not email_col:
+                st.error("CSV must have an `email` column.")
+            else:
+                st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+                st.caption(f"{len(df)} row(s) in this file.")
+                if st.button("📥 Add to Queue", key="roofing_import_btn"):
+                    rows = [
+                        {
+                            "business_name": str(row.get(name_col, "")).strip() if name_col else "",
+                            "email": str(row.get(email_col, "")).strip(),
+                        }
+                        for _, row in df.iterrows()
+                    ]
+                    result = database.roofing_import_contacts(rows, source_batch=uploaded.name)
+                    st.success(
+                        f"Queued {result['imported']} new contact(s). "
+                        f"Skipped {result['duplicates_skipped']} duplicate(s), "
+                        f"{result['invalid_skipped']} invalid row(s)."
+                    )
+
+    st.divider()
+
+    st.subheader("📧 Send Mail")
+    queued_count = database.roofing_get_queued_count()
+    col_q1, col_q2 = st.columns(2)
+    col_q1.metric("Still queued", queued_count)
+    col_q2.metric("Today's remaining quota", max(daily_limit - sent_today, 0))
+
+    gate_env = config.SMTP_ENABLED
+    gate_toggle = database.roofing_sending_enabled()
+    gate_creds = smtp_ok
+    all_gates_open = gate_env and gate_toggle and gate_creds
+    with st.expander("🩺 Why isn't it sending? (click to check)", expanded=not all_gates_open):
+        st.markdown(f"- `.env`/Secrets `SMTP_ENABLED=true`: {'✅ Yes' if gate_env else '❌ No — set SMTP_ENABLED to \"true\" in Secrets'}")
+        st.markdown(f"- 'Enable Sending' toggle above: {'✅ On' if gate_toggle else '❌ Off — turn the toggle above ON'}")
+        st.markdown(f"- Business mail (host/user/password) filled in: {'✅ Yes' if gate_creds else '❌ No — fill SMTP_HOST/USER/PASSWORD/FROM_EMAIL'}")
+        if all_gates_open:
+            st.success("All 3 are green — sending should work. Click the button below.")
+
+    if st.button("📧 Send Mail (today's batch, one by one)", key="roofing_send_now_btn", type="primary"):
+        progress_bar = st.progress(0.0, text="Starting...")
+        status_line = st.empty()
+
+        def _update_progress(done: int, total: int):
+            frac = done / total if total else 1.0
+            progress_bar.progress(frac, text=f"Sending... {done} / {total}")
+
+        result = roofing_scheduler.send_now(progress_callback=_update_progress)
+
+        if result.get("skipped_disabled") == -1:
+            progress_bar.progress(1.0, text="Stopped — sending is off")
+            status_line.warning("Sending is off — check the diagnostic box above before trying again.")
+        elif result.get("skipped_limit") == -1:
+            progress_bar.progress(1.0, text="Stopped — daily limit reached")
+            status_line.warning(f"Today's daily limit ({daily_limit}) is already used up. Try again tomorrow.")
+        else:
+            progress_bar.progress(1.0, text="Done")
+            status_line.info(
+                f"Sent {result['sent']} / failed {result['failed']} "
+                f"(new leads released: {result['released']})."
+            )
+        st.rerun()
+
+    sequences = database.roofing_get_all_sequences()
+    if sequences:
+        open_status = database.roofing_get_open_status()
+        for s in sequences:
+            last_open = open_status.get(s["contact_id"])
+            s["opened"] = f"👁️ {last_open}" if last_open else "—"
+
+        df_seq = pd.DataFrame(sequences)
+        display_cols = [
+            "business_name", "email", "crm_stage", "status", "current_step",
+            "opened", "next_send_at", "last_sent_at",
+        ]
+        display_cols = [c for c in display_cols if c in df_seq.columns]
+        st.dataframe(
+            df_seq[display_cols].rename(columns={"crm_stage": "CRM Stage"}),
+            use_container_width=True, hide_index=True,
+        )
+
+        col_stop, col_stage = st.columns(2)
+        with col_stop:
+            stop_email = st.text_input(
+                "Stop sequence for this email (e.g. they replied)", key="roofing_stop_email"
+            )
+            if st.button("⛔ Stop Sequence", key="roofing_stop_btn") and stop_email:
+                contact = database.roofing_get_contact_by_email(stop_email)
+                if contact:
+                    database.roofing_stop_sequence(contact["id"], reason="Manually stopped")
+                    st.success(f"Sequence stopped for {stop_email}.")
+                    st.rerun()
+                else:
+                    st.warning("No matching contact found.")
+        with col_stage:
+            st.caption("Update CRM stage manually (Replied/Interested/Won/Lost, etc.).")
+            stage_email = st.text_input("Contact email", key="roofing_stage_email")
+            new_stage = st.selectbox(
+                "New stage", database.ROOFING_CRM_STAGES, key="roofing_stage_pick"
+            )
+            if st.button("📌 Update Stage", key="roofing_stage_btn") and stage_email:
+                contact = database.roofing_get_contact_by_email(stage_email)
+                if contact:
+                    database.roofing_set_crm_stage(contact["id"], new_stage)
+                    st.success(f"{stage_email} marked as **{new_stage}**.")
+                    st.rerun()
+                else:
+                    st.warning("No matching contact found.")
+    else:
+        st.info("No contacts imported yet.")
+
+    st.divider()
+    st.subheader("📜 Recent Send Log")
+    log = database.roofing_get_recent_log(limit=30)
+    if log:
+        df_log = pd.DataFrame(log)
+        display_cols = ["sent_at", "business_name", "email", "step", "subject", "status", "error_message"]
+        display_cols = [c for c in display_cols if c in df_log.columns]
+        st.dataframe(df_log[display_cols], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Nothing sent yet.")
+
+
+# ---------------------------------------------------------------------------
 # Reporting — ROI dashboard (Phase 1-4 pipeline funnel + Docly funnel/opens)
 # ---------------------------------------------------------------------------
 def render_reporting_section():
@@ -1778,6 +2358,43 @@ def render_reporting_section():
             )
         st.dataframe(pd.DataFrame(br_rows), use_container_width=True, hide_index=True)
 
+    st.divider()
+
+    st.subheader("🏘️ Roofing Sending & ROI (separate from Docly & BulkReach)")
+    rf_overview = database.reporting_roofing_overview()
+
+    rf1, rf2, rf3, rf4 = st.columns(4)
+    rf1.metric("Total contacts", rf_overview["total_contacts"])
+    rf2.metric("Still queued", rf_overview["queued"])
+    rf3.metric("Emails sent", rf_overview["total_sent"])
+    rf_open_rate = (
+        rf_overview["unique_opened_contacts"] / rf_overview["total_contacts"] * 100
+        if rf_overview["total_contacts"] else 0
+    )
+    rf4.metric("Unique open rate", f"{rf_open_rate:.0f}%")
+
+    st.markdown("**Roofing lead pipeline (CRM stages)**")
+    rf_stage_counts = rf_overview["stage_counts"]
+    rf_stage_df = pd.DataFrame(
+        {"Stage": list(rf_stage_counts.keys()), "Contacts": list(rf_stage_counts.values())}
+    ).set_index("Stage")
+    st.bar_chart(rf_stage_df)
+
+    rf_step_stats = rf_overview["step_stats"]
+    if rf_step_stats:
+        st.markdown("**Roofing per-step performance (Day 0 / Day 2 / Day 7)**")
+        step_names = {1: "Day 0", 2: "Day 2", 3: "Day 7"}
+        rf_rows = []
+        for step, stats in sorted(rf_step_stats.items()):
+            sent = stats.get("sent", 0)
+            opened = stats.get("opened", 0)
+            rate = f"{(opened / sent * 100):.0f}%" if sent else "—"
+            rf_rows.append(
+                {"Step": step_names.get(step, f"Step {step}"), "Sent": sent,
+                 "Opened": opened, "Open rate": rate}
+            )
+        st.dataframe(pd.DataFrame(rf_rows), use_container_width=True, hide_index=True)
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -1830,6 +2447,7 @@ def main():
     selected = render_sidebar()
 
     page_renderers = {
+        "🏠 Dashboard": render_dashboard_section,
         "📁 Campaigns": render_campaign_section,
         "📥 Import Leads": render_import_section,
         "📊 Leads & Status": render_leads_section,
@@ -1838,6 +2456,7 @@ def main():
         "📧 AI Outreach": render_outreach_section,
         "📨 Docly": render_docly_section,
         "🚀 BulkReach": render_bulkreach_section,
+        "🏘️ Roofing": render_roofing_section,
         "📈 Reporting": render_reporting_section,
     }
     page_renderers[selected]()
