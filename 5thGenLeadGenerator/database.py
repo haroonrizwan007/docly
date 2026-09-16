@@ -427,6 +427,72 @@ CREATE TABLE IF NOT EXISTS bulkreach_tracking_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bulkreach_tracking_contact ON bulkreach_tracking_events(contact_id);
+
+
+-- ---------------------------------------------------------------------
+-- ROOFING — a third, fully separate outreach list (own contacts,
+-- sequences, templates, daily limit, tracking). Same queued/daily-limit
+-- model as BulkReach, plus a synchronous "send right now" path used by
+-- the manual "Send Mail" button's live progress bar (roofing_scheduler.py).
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS roofing_contacts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_name       TEXT,
+    email               TEXT NOT NULL,
+    normalized_email    TEXT NOT NULL UNIQUE,
+    source_batch        TEXT,
+    crm_stage           TEXT NOT NULL DEFAULT 'New',
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_roofing_contacts_email ON roofing_contacts(normalized_email);
+
+CREATE TABLE IF NOT EXISTS roofing_sequences (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id          INTEGER NOT NULL UNIQUE REFERENCES roofing_contacts(id) ON DELETE CASCADE,
+    status              TEXT NOT NULL DEFAULT 'QUEUED',   -- QUEUED / ACTIVE / STOPPED / COMPLETED
+    current_step        INTEGER NOT NULL DEFAULT 0,       -- 0=not sent, 1=Day0 sent, 2=Day2 sent, 3=Day7 sent
+    next_send_at        TEXT NOT NULL,                    -- irrelevant while QUEUED
+    last_sent_at        TEXT,
+    stop_reason         TEXT,
+    queued_at           TEXT NOT NULL,                    -- FIFO order for daily release
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_roofing_seq_status ON roofing_sequences(status);
+CREATE INDEX IF NOT EXISTS idx_roofing_seq_next ON roofing_sequences(next_send_at);
+CREATE INDEX IF NOT EXISTS idx_roofing_seq_queued ON roofing_sequences(queued_at);
+
+CREATE TABLE IF NOT EXISTS roofing_send_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id          INTEGER NOT NULL REFERENCES roofing_contacts(id) ON DELETE CASCADE,
+    step                INTEGER NOT NULL,
+    subject             TEXT,
+    body                TEXT,
+    status              TEXT NOT NULL,   -- SENT / FAILED / SKIPPED_DISABLED / SKIPPED_LIMIT
+    error_message       TEXT,
+    sent_at             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_roofing_log_contact ON roofing_send_log(contact_id);
+CREATE INDEX IF NOT EXISTS idx_roofing_log_sent_at ON roofing_send_log(sent_at);
+
+CREATE TABLE IF NOT EXISTS roofing_settings (
+    key     TEXT PRIMARY KEY,
+    value   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS roofing_tracking_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id      INTEGER NOT NULL REFERENCES roofing_contacts(id) ON DELETE CASCADE,
+    step            INTEGER NOT NULL,
+    ip_address      TEXT,
+    user_agent      TEXT,
+    occurred_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_roofing_tracking_contact ON roofing_tracking_events(contact_id);
 """
 
 
@@ -2022,5 +2088,384 @@ def reporting_bulkreach_overview() -> dict:
         "total_sent": sent,
         "unique_opened_contacts": opened_contacts,
         "stage_counts": bulkreach_get_crm_stage_counts(),
+        "step_stats": step_stats,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ROOFING — settings / templates (mirrors the BulkReach functions above,
+# minus timezone gating — roofing_scheduler.py doesn't use it).
+# ---------------------------------------------------------------------------
+def roofing_get_setting(key: str, default=None):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM roofing_settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+
+
+def roofing_set_setting(key: str, value: str):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO roofing_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+
+
+def roofing_sending_enabled() -> bool:
+    return roofing_get_setting("sending_enabled", "false") == "true"
+
+
+def roofing_set_sending_enabled(enabled: bool):
+    roofing_set_setting("sending_enabled", "true" if enabled else "false")
+
+
+def roofing_get_daily_limit() -> int:
+    try:
+        return int(roofing_get_setting("daily_limit", "20"))
+    except (TypeError, ValueError):
+        return 20
+
+
+def roofing_set_daily_limit(n: int):
+    roofing_set_setting("daily_limit", str(max(1, int(n))))
+
+
+def roofing_get_template(step: int, default: str = "") -> str:
+    return roofing_get_setting(f"template_step_{step}", default)
+
+
+def roofing_set_template(step: int, html: str):
+    roofing_set_setting(f"template_step_{step}", html)
+
+
+def roofing_get_subject(step: int, default: str = "") -> str:
+    return roofing_get_setting(f"subject_step_{step}", default)
+
+
+def roofing_set_subject(step: int, text: str):
+    roofing_set_setting(f"subject_step_{step}", text)
+
+
+ROOFING_CRM_STAGES = [
+    "New", "Contacted", "Opened", "Replied",
+    "Interested", "Meeting Booked", "Won", "Lost",
+]
+
+
+def roofing_set_crm_stage(contact_id: int, stage: str):
+    if stage not in ROOFING_CRM_STAGES:
+        raise ValueError(f"Unknown CRM stage: {stage!r}")
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE roofing_contacts SET crm_stage = ? WHERE id = ?",
+            (stage, contact_id),
+        )
+
+
+def _roofing_auto_advance_stage(conn, contact_id: int, at_least: str):
+    order = ROOFING_CRM_STAGES
+    row = conn.execute(
+        "SELECT crm_stage FROM roofing_contacts WHERE id = ?", (contact_id,)
+    ).fetchone()
+    current = row["crm_stage"] if row else "New"
+    if order.index(current) < order.index(at_least):
+        conn.execute(
+            "UPDATE roofing_contacts SET crm_stage = ? WHERE id = ?",
+            (at_least, contact_id),
+        )
+
+
+def roofing_get_crm_stage_counts() -> dict:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT crm_stage, COUNT(*) AS cnt FROM roofing_contacts GROUP BY crm_stage"
+        ).fetchall()
+    counts = {stage: 0 for stage in ROOFING_CRM_STAGES}
+    for r in rows:
+        counts[r["crm_stage"]] = r["cnt"]
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# ROOFING — import (contacts start QUEUED, not immediately due)
+# ---------------------------------------------------------------------------
+def roofing_import_contacts(rows: list[dict], source_batch: str = "") -> dict:
+    imported = 0
+    duplicates_skipped = 0
+    invalid_skipped = 0
+    now = _now()
+
+    with get_connection() as conn:
+        for row in rows:
+            email = (row.get("email") or "").strip()
+            business_name = (row.get("business_name") or "").strip()
+            norm_email = normalize_email(email)
+
+            if not norm_email or "@" not in norm_email:
+                invalid_skipped += 1
+                continue
+
+            existing = conn.execute(
+                "SELECT id FROM roofing_contacts WHERE normalized_email = ?",
+                (norm_email,),
+            ).fetchone()
+            if existing:
+                duplicates_skipped += 1
+                continue
+
+            cur = conn.execute(
+                """
+                INSERT INTO roofing_contacts
+                    (business_name, email, normalized_email, source_batch, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (business_name, email, norm_email, source_batch, now),
+            )
+            contact_id = cur.lastrowid
+
+            conn.execute(
+                """
+                INSERT INTO roofing_sequences
+                    (contact_id, status, current_step, next_send_at,
+                     queued_at, created_at, updated_at)
+                VALUES (?, 'QUEUED', 0, ?, ?, ?, ?)
+                """,
+                (contact_id, now, now, now, now),
+            )
+            imported += 1
+
+    return {
+        "imported": imported,
+        "duplicates_skipped": duplicates_skipped,
+        "invalid_skipped": invalid_skipped,
+    }
+
+
+def roofing_get_queued_count() -> int:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM roofing_sequences WHERE status = 'QUEUED'"
+        ).fetchone()
+        return row["n"] if row else 0
+
+
+def roofing_get_queued_candidates(limit: int) -> list[dict]:
+    """Read-only: oldest-queued-first candidates, WITHOUT changing status."""
+    if limit <= 0:
+        return []
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, c.business_name, c.email, c.normalized_email
+            FROM roofing_sequences s
+            JOIN roofing_contacts c ON c.id = s.contact_id
+            WHERE s.status = 'QUEUED'
+            ORDER BY s.queued_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def roofing_activate_sequences(seq_ids: list[int]):
+    """Mark specific (already-selected) sequence rows ACTIVE with
+    next_send_at=now, so the next due-check/send picks them up as Day 0."""
+    if not seq_ids:
+        return
+    now = _now()
+    with get_connection() as conn:
+        placeholders = ",".join("?" * len(seq_ids))
+        conn.execute(
+            f"""
+            UPDATE roofing_sequences
+            SET status = 'ACTIVE', next_send_at = ?, updated_at = ?
+            WHERE id IN ({placeholders})
+            """,
+            (now, now, *seq_ids),
+        )
+
+
+def roofing_get_due_sequences(limit: int = 50) -> list[dict]:
+    """ACTIVE sequences whose next_send_at has arrived (follow-ups, and
+    anything just released), oldest first. Never includes QUEUED."""
+    now = _now()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, c.business_name, c.email, c.normalized_email
+            FROM roofing_sequences s
+            JOIN roofing_contacts c ON c.id = s.contact_id
+            WHERE s.status = 'ACTIVE' AND s.next_send_at <= ?
+            ORDER BY s.next_send_at ASC
+            LIMIT ?
+            """,
+            (now, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def roofing_sent_today_count() -> int:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM roofing_send_log
+            WHERE status = 'SENT' AND date(sent_at) = date('now')
+            """
+        ).fetchone()
+        return row["n"] if row else 0
+
+
+def roofing_log_send(contact_id: int, step: int, subject: str, body: str,
+                      status: str, error_message: str = None):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO roofing_send_log
+                (contact_id, step, subject, body, status, error_message, sent_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (contact_id, step, subject, body, status, error_message, _now()),
+        )
+        if status == "SENT":
+            _roofing_auto_advance_stage(conn, contact_id, "Contacted")
+
+
+def roofing_advance_sequence(contact_id: int, new_step: int, next_send_at: str,
+                              status: str = "ACTIVE"):
+    now = _now()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE roofing_sequences
+            SET current_step = ?, next_send_at = ?, status = ?,
+                last_sent_at = ?, updated_at = ?
+            WHERE contact_id = ?
+            """,
+            (new_step, next_send_at, status, now, now, contact_id),
+        )
+
+
+def roofing_stop_sequence(contact_id: int, reason: str = "Manually stopped"):
+    now = _now()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE roofing_sequences
+            SET status = 'STOPPED', stop_reason = ?, updated_at = ?
+            WHERE contact_id = ?
+            """,
+            (reason, now, contact_id),
+        )
+
+
+def roofing_get_all_sequences() -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, c.business_name, c.email, c.crm_stage
+            FROM roofing_sequences s
+            JOIN roofing_contacts c ON c.id = s.contact_id
+            ORDER BY
+                CASE s.status WHEN 'QUEUED' THEN 1 ELSE 0 END,
+                s.updated_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def roofing_get_contact_by_email(email: str):
+    norm = normalize_email(email)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM roofing_contacts WHERE normalized_email = ?", (norm,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def roofing_get_recent_log(limit: int = 50) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.*, c.business_name, c.email
+            FROM roofing_send_log l
+            JOIN roofing_contacts c ON c.id = l.contact_id
+            ORDER BY l.sent_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# ROOFING — open tracking
+# ---------------------------------------------------------------------------
+def roofing_record_open(contact_id: int, step: int, ip_address: str = None,
+                         user_agent: str = None):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO roofing_tracking_events
+                (contact_id, step, ip_address, user_agent, occurred_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (contact_id, step, ip_address, user_agent, _now()),
+        )
+        _roofing_auto_advance_stage(conn, contact_id, "Opened")
+
+
+def roofing_get_open_status() -> dict:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT contact_id, MAX(occurred_at) AS last_opened_at
+            FROM roofing_tracking_events
+            GROUP BY contact_id
+            """
+        ).fetchall()
+        return {r["contact_id"]: r["last_opened_at"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# ROOFING — reporting overview (mirrors reporting_bulkreach_overview)
+# ---------------------------------------------------------------------------
+def reporting_roofing_overview() -> dict:
+    with get_connection() as conn:
+        sent = conn.execute(
+            "SELECT COUNT(*) AS n FROM roofing_send_log WHERE status = 'SENT'"
+        ).fetchone()["n"]
+        opened_contacts = conn.execute(
+            "SELECT COUNT(DISTINCT contact_id) AS n FROM roofing_tracking_events"
+        ).fetchone()["n"]
+        total_contacts = conn.execute(
+            "SELECT COUNT(*) AS n FROM roofing_contacts"
+        ).fetchone()["n"]
+        queued = conn.execute(
+            "SELECT COUNT(*) AS n FROM roofing_sequences WHERE status = 'QUEUED'"
+        ).fetchone()["n"]
+        by_step = conn.execute(
+            "SELECT step, COUNT(*) AS sent_cnt FROM roofing_send_log "
+            "WHERE status = 'SENT' GROUP BY step"
+        ).fetchall()
+        opens_by_step = conn.execute(
+            "SELECT step, COUNT(*) AS open_cnt FROM roofing_tracking_events GROUP BY step"
+        ).fetchall()
+
+    step_stats = {r["step"]: {"sent": r["sent_cnt"], "opened": 0} for r in by_step}
+    for r in opens_by_step:
+        step_stats.setdefault(r["step"], {"sent": 0, "opened": 0})
+        step_stats[r["step"]]["opened"] = r["open_cnt"]
+
+    return {
+        "total_contacts": total_contacts,
+        "queued": queued,
+        "total_sent": sent,
+        "unique_opened_contacts": opened_contacts,
+        "stage_counts": roofing_get_crm_stage_counts(),
         "step_stats": step_stats,
     }
