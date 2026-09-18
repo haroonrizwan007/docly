@@ -1,0 +1,34 @@
+name: Keep Streamlit App Awake
+
+# Runs keep_alive.py on a schedule using a real headless browser
+# (Playwright), which is what actually prevents/reverses Streamlit
+# Community Cloud's sleep mode — a plain HTTP ping (e.g. UptimeRobot)
+# does NOT work for this, since Streamlit only starts the real app once
+# a browser opens a WebSocket connection to it.
+on:
+  schedule:
+    # Every 10 minutes — comfortably inside Streamlit's inactivity
+    # window, so a real visitor should never see the sleep screen.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}  # lets you also trigger this manually from the
+                          # repo's Actions tab, for testing
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Ping the app (wake it up if asleep)
+        run: python keep_alive.py
